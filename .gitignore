@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# MacOS
+.DS_Store
+
+# Project specific
+uploads/
+server.log
+server.pid
+*.png
+!test_madmax.png
+
+# Model Weights (Strict Exclusion)
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.gguf
+models/
+checkpoints/
