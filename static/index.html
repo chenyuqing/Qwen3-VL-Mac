@@ -389,6 +389,16 @@
         }
     </style>
 
+    <!-- Markdown Support -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        // Configure marked
+        marked.setOptions({
+            breaks: true,  // Enable line breaks
+            gfm: true      // Enable GitHub Flavored Markdown
+        });
+    </script>
+
     <script>
         const chatContainer = document.getElementById('chatContainer');
         const promptInput = document.getElementById('promptInput');
@@ -398,7 +408,7 @@
         const imagePreviewContainer = document.getElementById('imagePreviewContainer');
         const previewImg = document.getElementById('previewImg');
         const removeImgBtn = document.getElementById('removeImgBtn');
-        
+
         // Modal logic
         const modal = document.getElementById("imageModal");
         const modalImg = document.getElementById("modalImg");
@@ -483,13 +493,10 @@
             // Show Loading Indicator (Initially)
             const loadingId = appendLoadingIndicator();
             const aiMsgId = 'ai-msg-' + Date.now();
-            
-            // Prepare for AI response bubble (hidden initially or replaces loading)
-            // Actually, let's keep loading until first byte, then replace with partial text.
 
             try {
                 const formData = new FormData();
-                formData.append('prompt', text || (file ? "请详细描述这张图片" : "")); 
+                formData.append('prompt', text || (file ? "请详细描述这张图片" : ""));
                 if (file) {
                     formData.append('image', file);
                 }
@@ -509,7 +516,7 @@
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    
+
                     const chunk = decoder.decode(value, { stream: true });
                     currentText += chunk;
 
@@ -549,12 +556,12 @@
 
             let contentHtml = '';
             if (text) {
-                contentHtml += `<div class="msg-text">${escapeHtml(text)}</div>`;
+                const parsedText = role === 'ai' ? marked.parse(text) : escapeHtml(text);
+                contentHtml += `<div class="msg-text">${parsedText}</div>`;
             }
 
             if (imageFile) {
                 const imgUrl = URL.createObjectURL(imageFile);
-                // Add onclick handler for modal
                 contentHtml += `<img src="${imgUrl}" alt="uploaded image" onclick="openModal('${imgUrl}')">`;
             }
 
@@ -573,10 +580,7 @@
             if (msgDiv) {
                 const textDiv = msgDiv.querySelector('.msg-text');
                 if (textDiv) {
-                    textDiv.textContent = text; // or innerHTML if you trust it
-                    textDiv.innerHTML = text.replace(/\n/g, '<br>');
-                } else {
-                     // Should not happen if created via appendMessage with text
+                    textDiv.innerHTML = marked.parse(text); // Use marked to parse
                 }
                 chatContainer.scrollTop = chatContainer.scrollHeight;
             }

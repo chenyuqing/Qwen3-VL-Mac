@@ -48,81 +48,90 @@ except Exception as e:
 
 @app.post("/chat")
 async def chat(prompt: str = Form(...), image: UploadFile = File(None)):
-    # Create uploads directory if not exists
     if not os.path.exists("uploads"):
         os.makedirs("uploads")
 
-    try:
-        # 1. Handle File IO
-        messages = [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}],
-            }
-        ]
-        
-        if image:
-            content = await image.read()
-            pil_image = Image.open(io.BytesIO(content)).convert("RGB")
-                
-            # Smart Resize
-            max_size = 1024
-            if max(pil_image.size) > max_size:
-                pil_image.thumbnail((max_size, max_size))
+    # 1. Read image bytes in main thread (async I/O)
+    image_bytes = None
+    image_name = None
+    if image:
+        image_bytes = await image.read()
+        image_name = image.filename
+
+    # 2. Setup Streamer
+    streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
+    
+    # 3. Define the background task
+    def background_inference(prompt_text, img_bytes, img_name, stream_obj):
+        try:
+            # --- Preparation Phase (inside thread) ---
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt_text}],
+                }
+            ]
             
-            # Use UUID for unique filename
-            image_filename = f"upload_{uuid.uuid4()}.png"
-            file_path = f"uploads/{image_filename}"
-            pil_image.save(file_path)
-            messages[0]["content"].insert(0, {"type": "image", "image": os.path.abspath(file_path)})
+            if img_bytes:
+                pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                
+                # Smart Resize
+                max_size = 1024
+                if max(pil_image.size) > max_size:
+                    pil_image.thumbnail((max_size, max_size))
+                
+                # Unique filename
+                unique_name = f"upload_{uuid.uuid4()}.png"
+                file_path = f"uploads/{unique_name}"
+                pil_image.save(file_path)
+                messages[0]["content"].insert(0, {"type": "image", "image": os.path.abspath(file_path)})
 
-        # 2. Prepare inputs (Tokenization)
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        
-        image_inputs, video_inputs = process_vision_info(messages)
-        
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-        
-        inputs = inputs.to(model.device)
-
-        # 3. Setup Streamer and Thread
-        streamer = TextIteratorStreamer(processor, skip_prompt=True, skip_special_tokens=True)
-        generation_kwargs = dict(inputs, max_new_tokens=1024, do_sample=False, streamer=streamer)
-        
-        def locked_generate(**kwargs):
+            # Tokenization
+            text = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, video_inputs = process_vision_info(messages)
+            
+            inputs = processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+            )
+            inputs = inputs.to(model.device)
+            
+            # --- Generation Phase (Locked) ---
+            generation_kwargs = dict(inputs, max_new_tokens=1024, do_sample=False, streamer=stream_obj)
+            
             with gpu_lock:
                 try:
-                    model.generate(**kwargs)
+                    model.generate(**generation_kwargs)
                 finally:
-                    # Cleanup memory after generation
                     if torch.backends.mps.is_available():
                         torch.mps.empty_cache()
+                        
+        except Exception as e:
+            # Send error to the stream
+            stream_obj.put(f"[Error: {str(e)}]")
+            # Important: end the stream so it doesn't hang
+            stream_obj.end()
+            import traceback
+            traceback.print_exc()
 
-        thread = Thread(target=locked_generate, kwargs=generation_kwargs)
-        thread.start()
+    # 4. Start Thread
+    thread = Thread(target=background_inference, args=(prompt, image_bytes, image_name, streamer))
+    thread.start()
 
-        # 4. Stream Response
-        async def response_generator():
-            try:
-                for new_text in streamer:
-                    yield new_text
-            except Exception as e:
-                yield f"Error during generation: {str(e)}"
+    # 5. Return Stream
+    async def response_generator():
+        try:
+            for new_text in streamer:
+                yield new_text
+        except Exception as e:
+            yield f"[Stream Error: {str(e)}]"
 
-        return StreamingResponse(response_generator(), media_type="text/plain")
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"error": str(e)}
+    return StreamingResponse(response_generator(), media_type="text/plain")
 
 # Serve Static Files (Frontend)
 if not os.path.exists("static"):
